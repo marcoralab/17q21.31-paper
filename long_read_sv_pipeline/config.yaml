@@ -1,0 +1,22 @@
+# -------------------------------------------------------------------
+# Configuration template for the long-read SV calling/phasing pipeline.
+# Edit the paths below for your environment, then run the workflow with:
+#     snakemake --use-conda --cores <N>
+# -------------------------------------------------------------------
+
+# Sample sheet: one entry per sample. Each value is a list of FASTQ
+# paths (multiple FASTQs per sample will be concatenated by pbmm2).
+samples:
+  SAMPLE_ID_1: ["/path/to/sample_1.fastq"]
+  SAMPLE_ID_2: ["/path/to/sample_2.fastq"]
+  # ... add additional samples as needed
+
+# ---- Reference genome (GRCh38 primary assembly) ----
+ref_genome_mmi:   "/path/to/GRCh38.primary_assembly.genome.mmi"
+ref_genome_fasta: "/path/to/GRCh38.primary_assembly.genome.fa"
+
+# ---- Output directories ----
+output_bam_dir:        "results/bams_pbmm2"
+output_vcf_dir:        "results/vcf_after_pbsv"
+whatshap_output_pbsv:  "results/whatshap_output_pbsv"
+log_folder:            "results/logs"

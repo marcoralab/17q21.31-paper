@@ -1,0 +1,11 @@
+name: whatshap-env
+channels:
+  - conda-forge
+  - bioconda
+  - defaults
+dependencies:
+  - python=3.10
+  - whatshap=2.0
+  - pysam=0.21.0
+  - pyfaidx=0.7.2.1
+  - htslib=1.18

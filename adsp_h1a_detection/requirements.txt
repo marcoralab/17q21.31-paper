@@ -1,0 +1,4 @@
+pandas
+# External (not pip-installable): bcftools must be on your PATH for
+# genotype_adsp_data.py. The modeling step requires R with the GENESIS,
+# Biobase, Matrix, lme4, and tidyverse packages.

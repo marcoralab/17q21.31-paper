@@ -1,0 +1,114 @@
+"""
+Long-read SV calling and phasing pipeline (GRCh38, primary assembly)
+--------------------------------------------------------------------
+For each PacBio HiFi sample listed in config.yaml this workflow:
+  1. Aligns the FASTQ to GRCh38 with pbmm2.
+  2. Calls structural variants with pbsv (discover -> call).
+  3. Phases the pbsv VCFs with WhatsHap.
+
+The phased pbsv VCFs produced here feed the downstream extraction and plotting
+scripts (extract_pbsv_sv_to_csv.py and plot_pbsv_variants_ordered_with_clones.py)
+that generate the publication figure.
+"""
+
+import os
+
+configfile: "config.yaml"
+
+bam_dir                = config["output_bam_dir"]
+output_folder          = config["output_vcf_dir"]
+svsig_folder           = os.path.join(output_folder, "svsig")
+log_folder             = config["log_folder"]
+reference_genome_mmi   = config["ref_genome_mmi"]
+reference_genome_fasta = config["ref_genome_fasta"]
+whatshap_output_pbsv   = config["whatshap_output_pbsv"]
+samples                = config["samples"]
+
+for folder in (
+    bam_dir, output_folder, svsig_folder, log_folder, whatshap_output_pbsv,
+):
+    os.makedirs(folder, exist_ok=True)
+
+
+rule all:
+    input:
+        expand("{}/{{sample}}.bam".format(bam_dir),                             sample=samples.keys()),
+        expand("{}/{{sample}}.all.var.vcf".format(output_folder),               sample=samples.keys()),
+        expand("{}/phased.{{sample}}.all.var.vcf".format(whatshap_output_pbsv), sample=samples.keys()),
+
+
+rule pbmm2_align:
+    input:
+        fastq = lambda wildcards: samples[wildcards.sample]
+    output:
+        bam = "{}/{{sample}}.bam".format(bam_dir)
+    log:
+        "{}/{{sample}}_pbmm2_align.log".format(log_folder)
+    threads: 20
+    resources:
+        mem_mb = 32000,
+        time_min = 1800
+    conda:
+        "envs/sv.yaml"
+    shell:
+        """
+        pbmm2 align {reference_genome_mmi} {input.fastq} {output.bam} \
+            --preset CCS --sort \
+            --rg "@RG\\tID:{wildcards.sample}" --sample {wildcards.sample} \
+            >> {log} 2>&1
+        """
+
+
+rule pbsv_discover:
+    input:
+        bam = "{}/{{sample}}.bam".format(bam_dir)
+    output:
+        svsig = "{}/{{sample}}.svsig.gz".format(svsig_folder)
+    log:
+        "{}/{{sample}}_pbsv_discover.log".format(log_folder)
+    threads: 20
+    resources:
+        mem_mb = 32000,
+        time_min = 1800
+    conda:
+        "envs/sv.yaml"
+    shell:
+        "pbsv discover {input.bam} {output.svsig} "
+        "--tandem-repeats {reference_genome_fasta} >> {log} 2>&1"
+
+
+rule pbsv_call:
+    input:
+        svsig = "{}/{{sample}}.svsig.gz".format(svsig_folder)
+    output:
+        vcf = "{}/{{sample}}.all.var.vcf".format(output_folder)
+    log:
+        "{}/{{sample}}_pbsv_call.log".format(log_folder)
+    threads: 20
+    resources:
+        mem_mb = 32000,
+        time_min = 1800
+    conda:
+        "envs/sv.yaml"
+    shell:
+        "pbsv call {reference_genome_fasta} {input.svsig} {output.vcf} "
+        ">> {log} 2>&1"
+
+
+rule whatshap_pbsv:
+    input:
+        vcf = "{}/{{sample}}.all.var.vcf".format(output_folder),
+        bam = "{}/{{sample}}.bam".format(bam_dir)
+    output:
+        phased_vcf = "{}/phased.{{sample}}.all.var.vcf".format(whatshap_output_pbsv)
+    log:
+        "{}/phased_{{sample}}.pbsv.log".format(log_folder)
+    threads: 20
+    resources:
+        mem_mb = 32000,
+        time_min = 1800
+    conda:
+        "envs/whatshap.yaml"
+    shell:
+        "whatshap phase -o {output.phased_vcf} -r {reference_genome_fasta} "
+        "{input.vcf} {input.bam} >> {log} 2>&1"
