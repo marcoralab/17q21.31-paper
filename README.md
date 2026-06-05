@@ -1,14 +1,6 @@
 # MAPT / 17q21.31 inversion — analysis code
 
-Code to reproduce the analyses and figures in:
-
-> **<Paper title>**
-> <Authors>. *<Journal>* (<Year>). doi:<DOI>
-
-This repository collects the code for each analysis in the study of the *MAPT*
-17q21.31 inversion — H1/H2 haplotype and genetic-ancestry effects — across
-long-read sequencing, iso-seq, bulk RNA-seq, and the ADSP whole-genome cohort.
-Each top-level folder is a self-contained analysis with its own README.
+This repository includes the code for long-read sequencing, iso-seq, bulk RNA-seq, and the ADSP analysis.
 
 ## Repository structure
 
@@ -25,32 +17,12 @@ Each top-level folder is a self-contained analysis with its own README.
 - **Each folder is independent.** Start with that folder's `README.md` — it lists
   the scripts, the run order, the inputs, and the dependencies for that analysis.
 - **Paths are not hard-coded.** Every script has a `CONFIG` block (or clearly
-  marked `path/to/...` placeholders) at the top. Edit those to point at your
-  copies of the data before running.
-- **Data is not included here.** See *Data availability* below for where to get
-  the inputs; reference files (genome, GTF, gene sets, etc.) are standard public
-  resources noted in each folder's README.
+  marked `path/to/...` placeholders) at the top.
+- **Data is not included here.** 
 - **Languages / tools vary by analysis** — Python, R/Bioconductor, and
   cluster tools (STAR, RSEM, Picard, pbsv, WhatsHap, GENESIS, gseapy). Each
   folder's README lists what it needs.
 
-## Data availability
-
-- Iso-Seq and bulk RNA-seq raw/processed data: **GEO accession <GSE…>**.
-- Long-read (PacBio HiFi) data: **<repository / accession>**.
-- ADSP whole-genome data are controlled-access via **NIAGADS / dbGaP**
-  (ADSP r4 WGS); apply through the appropriate data-access committee.
-
 ## Citation
 
-If you use this code, please cite the paper above. <Add a CITATION.cff or BibTeX
-entry here once available.>
-
-## License
-
-<Choose a license — e.g. MIT for permissive reuse — and add a LICENSE file.>
-
-## Contact
-
-<Name / email>, <Lab / institution>. Questions and issues welcome via the
-GitHub issue tracker.
+If you use this code, please cite the paper.
