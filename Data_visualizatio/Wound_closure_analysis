@@ -1,0 +1,318 @@
+---
+title: "scratch assay analysis"
+author: "Chiara"
+date: "2026-06-16"
+output: html_document
+---
+
+# analysis of relative wound density in scratch assay from incucyte over time from two 
+- load metadata,  platemap.xlsx platemap_2.xlsx
+- files:  scratch_astros_data.txt, scratch_astros_data_2.txt
+- run combined data and calculate AUC
+
+# parse time course data
+```{r}
+# === LIBRARIES ===
+library(tidyverse)
+library(lubridate)
+library(stringr)
+library(readxl)
+library(ggpubr)
+library(rstatix)
+
+# === FUNCTION: PARSE TIMECOURSE FILE ===
+parse_time_series_file <- function(file_path) {
+  all_lines <- readLines(file_path)
+  all_lines <- all_lines[nzchar(all_lines)]
+
+  timestamp_lines <- grep("^Time Stamp:", all_lines)
+  all_data <- list()
+
+  for (i in seq_along(timestamp_lines)) {
+    ts_line <- timestamp_lines[i]
+    header_line <- ts_line + 1
+    data_start <- header_line + 1
+
+    time_str <- str_match(all_lines[ts_line],
+                          "Time Stamp:\\s*(.*)\\s*Elapsed:")[,2]
+
+    elapsed <- as.numeric(str_match(all_lines[ts_line],
+                                   "Elapsed:\\s*(\\d+)")[,2])
+
+    headers <- unlist(strsplit(all_lines[header_line], "\t"))[-1]
+
+    next_ts <- ifelse(i < length(timestamp_lines),
+                      timestamp_lines[i+1] - 1,
+                      length(all_lines))
+
+    data_lines <- all_lines[data_start:next_ts]
+
+    for (line in data_lines) {
+      split_line <- unlist(strsplit(line, "\t"))
+      row_id <- split_line[1]
+      values <- as.numeric(split_line[-1])
+
+      if (length(values) != length(headers)) next
+
+      df <- tibble(
+        Row = row_id,
+        Col = headers,
+        Value = values,
+        Elapsed = elapsed,
+        Time = mdy_hms(time_str),
+        Well = paste0(Row, headers)
+      )
+
+      all_data[[length(all_data) + 1]] <- df
+    }
+  }
+
+  bind_rows(all_data)
+}
+```
+
+#load and combine two experiments
+```{r}
+# === LIBRARIES ===
+library(tidyverse)
+library(lubridate)
+library(stringr)
+library(readxl)
+library(ggpubr)
+library(rstatix)
+
+# === FUNCTION ===
+parse_time_series_file <- function(file_path) {
+  all_lines <- readLines(file_path)
+  all_lines <- all_lines[nzchar(all_lines)]
+
+  timestamp_lines <- grep("^Time Stamp:", all_lines)
+  all_data <- list()
+
+  for (i in seq_along(timestamp_lines)) {
+    ts_line <- timestamp_lines[i]
+    header_line <- ts_line + 1
+    data_start <- header_line + 1
+
+    time_str <- str_match(all_lines[ts_line],
+                          "Time Stamp:\\s*(.*)\\s*Elapsed:")[,2]
+
+    elapsed <- as.numeric(str_match(all_lines[ts_line],
+                                   "Elapsed:\\s*(\\d+)")[,2])
+
+    headers <- unlist(strsplit(all_lines[header_line], "\t"))[-1]
+
+    next_ts <- ifelse(i < length(timestamp_lines),
+                      timestamp_lines[i+1] - 1,
+                      length(all_lines))
+
+    data_lines <- all_lines[data_start:next_ts]
+
+    for (line in data_lines) {
+      split_line <- unlist(strsplit(line, "\t"))
+      row_id <- split_line[1]
+      values <- as.numeric(split_line[-1])
+
+      if (length(values) != length(headers)) next
+
+      df <- tibble(
+        Row = row_id,
+        Col = headers,
+        Value = values,
+        Elapsed = elapsed,
+        Time = mdy_hms(time_str),
+        Well = paste0(Row, headers)
+      )
+
+      all_data[[length(all_data) + 1]] <- df
+    }
+  }
+
+  bind_rows(all_data)
+}
+
+# === FUNCTION TO PROCESS A FILE ===
+process_file <- function(file, label) {
+
+  data <- parse_time_series_file(file)
+
+  data_clean <- data %>%
+    filter(!is.na(Value)) %>%
+    filter(Value >= 0, Value <= 100) %>%
+    filter(Elapsed <= 12)   # up to 12 h
+
+  platemap <- read_excel("platemap.xlsx", col_types = "text") %>%
+    rename(Row = 1) %>%
+    pivot_longer(-Row, names_to = "Col", values_to = "Treatment") %>%
+    mutate(
+      Well = paste0(Row, Col),
+      Genotype = case_when(
+        Treatment %in% c("51061", "50975") ~ "H1H1",
+        Treatment %in% c("12461", "51048") ~ "H1H2",
+        Treatment %in% c("50689", "51069") ~ "H1H1_A",
+        TRUE ~ NA_character_
+      )
+    ) %>%
+    filter(!is.na(Genotype))
+
+# === MERGE DATA ===
+data_joined <- data_clean %>%
+  left_join(platemap, by = "Well") %>%
+  filter(!is.na(Genotype))
+
+# === REMOVE MISSING WOUNDS OR EMPTY WELL  ===
+bad_wells <- data_joined %>%
+  filter(Elapsed == 1) %>%
+  group_by(Well) %>%
+  summarise(Value_1h = mean(Value), .groups = "drop") %>%
+  filter(Value_1h > 50| Value_1h < 5)
+
+data_joined <- data_joined %>%
+  filter(!Well %in% bad_wells$Well)
+
+  line_data <- data_joined %>%
+    group_by(Genotype, Treatment, Elapsed) %>%
+    summarise(Value = mean(Value), .groups = "drop") %>%
+    mutate(Experiment = label)
+
+  return(line_data)
+}
+
+# === RUN BOTH DATASETS ===
+line_data_1 <- process_file("scratch_astros_data.txt", "Exp 1")
+line_data_2 <- process_file("scratch_astros_data_2.txt", "Exp 2")
+
+# === COMBINE DATA ===
+line_all <- bind_rows(line_data_1, line_data_2)
+
+# === SUMMARY ===
+summary_all <- line_all %>%
+  group_by(Experiment, Genotype, Elapsed) %>%
+  summarise(
+    Mean = mean(Value),
+    SD = sd(Value),
+    SEM = SD / sqrt(n()),
+    .groups = "drop"
+  )
+
+# === MAIN COMBINED PLOT ===
+p1 <- ggplot() +
+  geom_line(data = summary_all,
+            aes(x = Elapsed, y = Mean,
+                color = Genotype,
+                linetype = Experiment,
+                group = interaction(Genotype, Experiment)),
+            linewidth = 1.2) +
+
+  geom_point(data = line_all,
+             aes(x = Elapsed, y = Value,
+                 color = Genotype,
+                 shape = Experiment),
+             size = 2, alpha = 0.7) +
+
+  geom_ribbon(data = summary_all,
+              aes(x = Elapsed,
+                  ymin = Mean - SEM,
+                  ymax = Mean + SEM,
+                  fill = Genotype,
+                  group = interaction(Genotype, Experiment)),
+              alpha = 0.15, color = NA) +
+
+  scale_shape_manual(values = c(16, 15)) +  # circle vs square
+
+  theme_minimal() +
+  labs(
+    title = "Wound Closure Combined Experiments",
+    x = "Elapsed Time (hours)",
+    y = "Relative Wound Density (%)",
+    color = "Genotype",
+    fill = "Genotype",
+    shape = "Experiment",
+    linetype = "Experiment"
+  )
+
+print(p1)
+
+# === AUC CALCULATION ===
+auc_all <- line_all %>%
+  group_by(Experiment, Genotype, Treatment) %>%
+  arrange(Elapsed) %>%
+  summarise(
+    AUC = {
+      x <- Elapsed
+      y <- Value
+
+      valid <- !is.na(x[-length(x)]) & !is.na(x[-1]) &
+               !is.na(y[-length(y)]) & !is.na(y[-1])
+
+      if (sum(valid) == 0) NA_real_
+      else sum(diff(x)[valid] *
+               (y[-length(y)][valid] + y[-1][valid]) / 2)
+    },
+    .groups = "drop"
+  )
+
+# === STATS (ACROSS GENOTYPES, COMBINED EXPERIMENTS) ===
+stat_test <- auc_all %>%
+  filter(!is.na(AUC)) %>%
+  pairwise_wilcox_test(
+    AUC ~ Genotype,
+    p.adjust.method = "BH"
+  ) %>%
+  add_y_position(fun = "max")
+
+print(stat_test)
+
+# === AUC BARPLOT ===
+p2 <- ggplot(auc_all,
+             aes(x = Genotype, y = AUC, fill = Genotype)) +
+
+  geom_boxplot(alpha = 0.5, outlier.shape = NA) +
+
+  geom_jitter(aes(shape = Experiment),
+              width = 0.15, size = 2, alpha = 0.8) +
+
+  stat_pvalue_manual(stat_test, label = "p.adj.signif") +
+
+  scale_shape_manual(values = c(16, 15)) +
+
+  theme_minimal() +
+  theme(legend.position = "right") +
+
+  labs(
+    title = "AUC by Genotype (Combined Experiments)",
+    y = "AUC (Wound Closure)",
+    x = "Genotype",
+    shape = "Experiment"
+  )
+
+print(p2)
+
+# === EXPORT PLOTS ===
+
+# Export combined time-course plot
+ggsave(
+  filename = "WoundClosure_Combined.png",   # or .pdf, .tiff, etc.
+  plot = p1,
+  width = 8, height = 6, dpi = 300
+)
+
+# Export AUC barplot
+ggsave(
+  filename = "AUC_by_Genotype.png",
+  plot = p2,
+  width = 6, height = 5, dpi = 300
+)
+
+
+auc_wide <- auc_all %>%
+  select(Genotype, AUC) %>%
+  group_by(Genotype) %>%
+  mutate(rep = row_number()) %>%
+  pivot_wider(names_from = Genotype, values_from = AUC) %>%
+  select(-rep)
+
+write.csv(auc_wide,
+          "Prism_AUC_Wide.csv",
+          row.names = FALSE)
+```
