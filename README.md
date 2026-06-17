@@ -11,6 +11,7 @@ This repository includes the code for long-read sequencing, iso-seq, bulk RNA-se
 | [`bulkrnaseq_mapt_inversion/`](bulkrnaseq_mapt_inversion) | Bulk RNA-seq (iPSC-derived cell types + post-mortem brain regions): STAR→Picard→RSEM, DESeq2/CQN differential expression, GSEA, and the inversion-locus / pathway / Venn figures. | inversion shared-gene dot plot, volcano plots, GSEA pathway heatmap, shared-DE-gene Venn |
 | [`bulkrnaseq_pca_comparison/`](bulkrnaseq_pca_comparison) | PCA comparing the study's iPSC-derived astrocyte/neuron bulk RNA-seq against five public reference datasets. | `PCs_plot_five_shapes_no_circle.png` |
 | [`adsp_h1a_detection/`](adsp_h1a_detection) | ADSP r4 WGS: *MAPT* H1/H2 tag-SNP genotyping and a GENESIS mixed-model (Cholesky two-step) test of haplotype × Alzheimer's-disease risk, stratified by ancestry. | `haplotype_forest_plot_cholesky_filtered.png` |
+| [`Data_visualization/`](Data_visualization) | R Analysis of dataset for manuscript figures with R: pmt grahs, proteomics, scratch assay, RNA seq tables . | `Table 1, S11, Figure 6, S5, S8` |
 
 ## How to use this code
 
