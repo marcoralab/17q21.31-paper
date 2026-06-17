@@ -1,0 +1,333 @@
+---
+title: "Pathway analisis RNA SEQ Ancestry"
+author: "Chiara"
+date: "2026-06-16"
+output: html_document
+---
+
+#analysis for 
+-table s11: from brain.xls
+-table 1: from brain.xls,astro.xlsx, neuron.xlsx
+
+#for table S11 brain only
+
+```{r}
+library(readxl)
+library(dplyr)
+library(tidyr)
+library(stringr)
+library(purrr)
+
+# =========================
+# FIXED COMPARISON ORDER
+# =========================
+comp_order <- c(
+  "AFR_H1H1_A_vs_H1H1",
+  "EUR_H1H2_vs_EUR_H1H1",
+  "AFR_H1H2_vs_AFR_H1H1",
+  "EUR_H1H1_vs_AFR_H1H1",
+  "EUR_H1H2_vs_AFR_H1H2"
+)
+
+# =========================
+# READ DATA
+# =========================
+read_gsea_sheet <- function(file, sheet = 1) {
+  
+  raw <- read_excel(file, sheet = sheet)
+  
+  blocks <- list(
+    "AFR_H1H1_A_vs_H1H1"   = raw[, 1:4],
+    "EUR_H1H2_vs_EUR_H1H1" = raw[, 6:9],
+    "AFR_H1H2_vs_AFR_H1H1" = raw[, 11:14],
+    "EUR_H1H1_vs_AFR_H1H1" = raw[, 16:19],
+    "EUR_H1H2_vs_AFR_H1H2" = raw[, 21:24]
+  )
+  
+  map2_dfr(blocks, names(blocks), function(x, comp) {
+    colnames(x) <- c("Pathway", "NES", "FDR", "Genes")
+    
+    x %>%
+      mutate(
+        Comparison = comp,
+        NES = as.numeric(NES),
+        FDR = suppressWarnings(as.numeric(FDR))
+      )
+  })
+}
+
+brain <- read_gsea_sheet("brain.xlsx", 1)
+
+# =========================
+# FILTER PATHWAYS ONLY
+# =========================
+sig <- brain %>%
+  mutate(Direction = ifelse(NES > 0, "UP", "DOWN")) %>%
+  filter(!is.na(FDR),
+         Comparison %in% comp_order)
+
+# =========================
+# ROBUST GENE PARSER (p < 0.05 ONLY)
+# =========================
+extract_genes <- function(x) {
+  if (is.na(x)) return(character(0))
+  
+  genes <- str_split(x, ";")[[1]] %>%
+    str_trim()
+  
+  map_chr(genes, function(g) {
+    
+    gene <- str_extract(g, "^[A-Za-z0-9\\-\\.]+")
+    
+    pval <- str_extract(g, "p-value:\\s*[0-9\\.eE-]+") %>%
+      str_remove("p-value:\\s*") %>%
+      as.numeric()
+    
+    if (!is.na(pval) && pval < 0.05) {
+      gene
+    } else {
+      NA_character_
+    }
+  }) %>%
+    na.omit() %>%
+    unique()
+}
+
+# =========================
+# BUILD GENE TABLE
+# =========================
+gene_table <- sig %>%
+  rowwise() %>%
+  mutate(Gene = list(extract_genes(Genes))) %>%
+  unnest(Gene) %>%
+  ungroup() %>%
+  select(Comparison, Direction, Gene) %>%
+  distinct()
+
+# =========================
+# REMOVE CONFLICTS (UP vs DOWN same gene)
+# =========================
+gene_table <- gene_table %>%
+  group_by(Comparison, Gene) %>%
+  summarise(
+    Direction = ifelse(length(unique(Direction)) > 1, NA, unique(Direction)),
+    .groups = "drop"
+  ) %>%
+  filter(!is.na(Direction))
+
+# =========================
+# SAFE LOOKUP
+# =========================
+get_set <- function(comp, dir) {
+  gene_table %>%
+    filter(Comparison == comp, Direction == dir) %>%
+    pull(Gene) %>%
+    unique()
+}
+
+# =========================
+# OVERLAP MATRIX
+# =========================
+build_matrix <- function(dir) {
+  
+  expand.grid(Row = comp_order, Col = comp_order, stringsAsFactors = FALSE) %>%
+    rowwise() %>%
+    mutate(
+      Value = case_when(
+        
+        # =========================
+        # DIAGONAL = show ALL genes in that comparison
+        # =========================
+        Row == Col ~ {
+          g <- get_set(Row, dir)
+          
+          if (length(g) == 0) "x"
+          else paste(sort(unique(g)), collapse = ", ")
+        },
+        
+        # =========================
+        # OFF-DIAGONAL = overlap
+        # =========================
+        TRUE ~ {
+          g1 <- get_set(Row, dir)
+          g2 <- get_set(Col, dir)
+          
+          shared <- intersect(g1, g2)
+          
+          if (length(shared) == 0) "x"
+          else paste(sort(shared), collapse = ", ")
+        }
+      )
+    ) %>%
+    ungroup() %>%
+    pivot_wider(names_from = Col, values_from = Value) %>%
+    mutate(Direction = dir) %>%
+    relocate(Direction)
+}
+
+# =========================
+# OUTPUT
+# =========================
+result <- bind_rows(
+  build_matrix("UP"),
+  build_matrix("DOWN")
+)
+
+write.csv(result, "brain_shared_genes_final.csv", row.names = FALSE)
+```
+
+#for table 1 brain, neurons, astrocytes
+
+```{r}
+library(readxl)
+library(dplyr)
+library(tidyr)
+library(stringr)
+library(purrr)
+
+# =========================
+# COMPARISON ORDER
+# =========================
+comp_order <- c(
+  "AA_H1H1_A_vs_AA_H1H1",
+  "EUR_H1H2_vs_EUR_H1H1",
+  "AA_H1H2_vs_AA_H1H1",
+  "EUR_H1H1_vs_AA_H1H1",
+  "EUR_H1H2_vs_AA_H1H2"
+)
+
+cell_order <- c("Brain-MFG", "Astrocytes", "Neurons")
+
+# =========================
+# READ FUNCTION
+# =========================
+read_gsea <- function(file, celltype) {
+  
+  raw <- read_excel(file)
+  
+  blocks <- list(
+    "AA_H1H1_A_vs_AA_H1H1" = raw[, 1:4],
+    "EUR_H1H2_vs_EUR_H1H1" = raw[, 6:9],
+    "AA_H1H2_vs_AA_H1H1"   = raw[, 11:14],
+    "EUR_H1H1_vs_AA_H1H1"  = raw[, 16:19],
+    "EUR_H1H2_vs_AA_H1H2"  = raw[, 21:24]
+  )
+  
+  map2_dfr(blocks, names(blocks), function(x, comp) {
+    colnames(x) <- c("Pathway", "NES", "FDR", "Genes")
+    
+    x %>%
+      mutate(
+        Comparison = comp,
+        CellType = celltype,
+        NES = as.numeric(NES),
+        FDR = suppressWarnings(as.numeric(FDR)),
+        Direction = ifelse(NES > 0, "UP", "DOWN")
+      )
+  })
+}
+
+# =========================
+# LOAD DATA
+# =========================
+brain   <- read_gsea("brain.xlsx", "Brain-MFG")
+astro   <- read_gsea("astro.xlsx", "Astrocytes")
+neurons <- read_gsea("neuron.xlsx", "Neurons")
+
+all <- bind_rows(brain, astro, neurons)
+
+# =========================
+# FILTER
+# =========================
+sig <- all %>%
+  filter(
+    !is.na(FDR),
+    FDR < 0.05,
+    abs(NES) > 1,
+    Comparison %in% comp_order
+  )
+
+# =========================
+# CLEAN PATHWAYS
+# =========================
+sig <- sig %>%
+  mutate(Pathway = Pathway %>%
+           str_remove("^KEGG_") %>%
+           str_replace_all("_", " ") %>%
+           str_to_sentence())
+
+# =========================
+# COLLAPSE + COUNT OCCURRENCE ACROSS COMPARISONS
+# =========================
+sig2 <- sig %>%
+  group_by(Comparison, CellType, Direction) %>%
+  summarise(
+    Pathways = list(unique(Pathway)),
+    .groups = "drop"
+  ) %>%
+  
+  unnest(Pathways)
+
+# count in how many comparisons each pathway appears
+pathway_freq <- sig2 %>%
+  distinct(Pathways, Comparison) %>%
+  count(Pathways, name = "n_comparisons")
+
+# keep only pathways present in ≥2 comparisons
+keep_paths <- pathway_freq %>%
+  filter(n_comparisons >= 2) %>%
+  pull(Pathways)
+
+sig2 <- sig2 %>%
+  filter(Pathways %in% keep_paths)
+
+# re-collapse after filtering
+sig2 <- sig2 %>%
+  group_by(Comparison, CellType, Direction) %>%
+  summarise(
+    Pathways = paste(sort(unique(Pathways)), collapse = ", "),
+    .groups = "drop"
+  )
+
+# =========================
+# SAFE WIDE FUNCTION
+# =========================
+safe_wide <- function(df, dir) {
+  
+  df %>%
+    filter(Direction == dir) %>%
+    mutate(Comparison = factor(Comparison, levels = comp_order)) %>%
+    arrange(Comparison) %>%
+    
+    pivot_wider(
+      names_from = CellType,
+      values_from = Pathways,
+      values_fill = "-"
+    ) %>%
+    
+    mutate(Comparison = factor(Comparison, levels = comp_order)) %>%
+    arrange(Comparison) %>%
+    
+    {
+      df2 <- .
+      for (c in cell_order) {
+        if (!c %in% colnames(df2)) df2[[c]] <- "-"
+      }
+      df2
+    } %>%
+    
+    select(Comparison, all_of(cell_order)) %>%
+    mutate(Direction = dir) %>%
+    relocate(Direction, Comparison)
+}
+
+# =========================
+# FINAL OUTPUT
+# =========================
+final_table <- bind_rows(
+  safe_wide(sig2, "UP"),
+  safe_wide(sig2, "DOWN")
+)
+
+write.csv(final_table, "GSEA_FINAL_SHARED_IN_2_COMPARISONS.csv", row.names = FALSE)
+```
