@@ -1,0 +1,1177 @@
+---
+title: "proteomics MS Ancestry"
+author: "Chiara Pedicone"
+date: "2026-06-16"
+output: html_document
+---
+
+#extract metadata and analize data
+- extract metadata_CWP4.csv
+- extract log2 intensity files per protein data_CWP4.csv
+- linear model lmFit
+- volcano plot proteins
+- GSEA, barplot, CNTPLOT, Venn
+- overlap with RNA seq pathways
+
+#CWP4 data processing
+```{r}
+rm(list = ls())
+# Load necessary libraries
+library(readxl)
+library(dplyr)
+library(limma)
+library(EnhancedVolcano)
+
+# Read in the data
+data <- read_excel("proteomics_CWP4_final.xlsx")
+
+# Extract metadata: assuming metadata is in the first ~15 rows and first ~10 columns
+meta_raw <- data[1:7, 2:ncol(data)] #7 col of meta
+
+meta_clean <- meta_raw[, -c(1:3)] #3 is before first full
+
+meta<- as.data.frame(t(meta_clean))
+
+colnames(meta) <- as.character(meta[1, ])
+meta <- meta[-1, ]
+
+# Export metadata to CSV (for external editing, e.g. in Excel)
+write.csv(meta, "metadata_CWP4.csv")
+
+# Read in edited metadata
+#meta <- read.csv("metadata.csv", stringsAsFactors = FALSE)
+
+# Assuming your data frame is called 'data'
+
+# Extract the geneSym column (4th column)
+geneSym_col <- data[, 4]
+
+# Extract columns H (6) to end
+cols_H_to_end <- data[, 6:ncol(data)]
+
+# Combine geneSym_col as first column with columns H to N
+result <- cbind(geneSym_col, cols_H_to_end)
+
+# Optionally, rename first column for clarity
+colnames(result)[1] <- "geneSym"
+result <- result[-(1:8), ]
+result <- result[!is.na(result$geneSym), ]
+# Remove rows where geneSym is NA or the string "NA"
+result <- result[!is.na(result$geneSym) & result$geneSym != "NA", ]
+
+# If geneSym is a column in your dataframe:
+result <- result[!duplicated(result$geneSym), ]
+
+#result$geneSym <- make.unique(as.character(result$geneSym))
+rownames(result) <- result$geneSym  # Set geneSym as rownames
+result$geneSym <- NULL              # Remove geneSym column
+
+write.csv(result, "data_CWP4.csv")
+```
+
+
+
+#LmFit and Volcano proteins 
+```{r}
+rm(list = ls())
+library(dplyr)
+library(limma)
+library(EnhancedVolcano)
+
+# Load metadata and expression data
+meta <- read.csv("metadata_CWP4.csv", stringsAsFactors = FALSE)
+result <- read.csv("data_CWP4.csv", stringsAsFactors = FALSE, row.names = 1, check.names = FALSE)
+
+# Set cell type
+ancestry <- "AA"
+  # or whatever your cell type is
+cell_type <- "Astrocytes"  
+#cell_type <- "Neuron"
+# Step 1: Subset metadata
+
+meta_cell <- meta %>%
+  filter(Ancestry == ancestry, Haplotype %in% c("H1H1","H1H2","H1H1_A"),CellType == "Astrocytes")
+# Set rownames based on sample IDs
+
+rownames(meta_cell) <- meta_cell$X
+
+# Step 2: Match expression matrix to filtered metadata
+sample_ids <- rownames(meta_cell)
+common_samples <- intersect(sample_ids, colnames(result))
+
+# Subset expression data
+df_selected <- result[, common_samples, drop = FALSE]
+
+# Convert to numeric expression matrix
+exprs <- as.matrix(df_selected)
+mode(exprs) <- "numeric"
+exprs[exprs == "NA"] <- NA
+
+# Filter out proteins with too many NAs
+keep_genes <- rowSums(!is.na(exprs)) >= (ncol(exprs) / 4)
+exprs_filtered <- exprs[keep_genes, , drop = FALSE]
+
+# Step 3: Prepare metadata
+metadata <- meta_cell %>%
+  mutate(
+    haplotype = factor(Haplotype, levels = c("H1H1", "H1H2", "H1H1_A")), # H1H1 = reference
+    cell_type = factor(CellType),
+    sex = factor(sex),
+    donor = factor(Cell_Line)
+  ) %>%
+  select(haplotype,sex,cell_type, donor)
+
+# Which samples have missing data in any covariate used in the model?
+rows_with_na <- which(!complete.cases(metadata[, c("haplotype", "sex","cell_type")]))
+print(rownames(metadata)[rows_with_na])
+
+# Reorder expression matrix to match metadata
+exprs_filtered <- exprs_filtered[, rownames(metadata), drop = FALSE]
+
+# Step 4: Create design matrix with interaction term
+design <- model.matrix(~ haplotype, data = metadata)
+print(colnames(design))  # Sanity check
+
+# Step 5: Fit model
+fit <- lmFit(exprs_filtered, design)
+fit <- eBayes(fit)
+
+# Step 6: Extract effect
+# Define the contrasts/effects of interest
+library(EnhancedVolcano)
+
+effect_list <- c(
+  "haplotypeH1H2",
+  "haplotypeH1H1_A")
+
+fdr_cutoff <- 0.05
+logfc_cutoff <- 1
+
+for (coef_name in effect_list) {
+  if (coef_name %in% colnames(fit$coefficients)) {
+    
+    deg_results <- topTable(fit, coef = coef_name, number = Inf, adjust.method = "fdr")
+    
+    ## ---- SIGNIFICANT GENES ----
+    sig_up <- deg_results %>%
+      dplyr::filter(adj.P.Val < fdr_cutoff & logFC > logfc_cutoff)
+
+    sig_down <- deg_results %>%
+      dplyr::filter(adj.P.Val < fdr_cutoff & logFC < -logfc_cutoff)
+
+    ## ---- SAVE CSV ----
+    out_csv <- paste0("DE_proteins_", cell_type, "_", gsub(":", "_", coef_name), ".csv")
+    write.csv(deg_results, out_csv, row.names = TRUE)
+    message("Saved: ", out_csv)
+
+    ## ---- SAVE RDA ----
+    dge_export <- list(
+      full_DGE = deg_results,
+      significant_up = sig_up,
+      significant_down = sig_down
+    )
+
+    rda_filename <- paste0("DGE_", cell_type, "_", gsub(":", "_", coef_name), ".Rda")
+    save(dge_export, file = rda_filename)
+    message("Saved RDA: ", rda_filename)
+
+    ## ---- VOLCANO PLOT ----
+    png_filename <- paste0("Volcano_", cell_type, "_", gsub(":", "_", coef_name), ".png")
+    png(png_filename, width = 1200, height = 1000)
+
+    print(
+      EnhancedVolcano(
+        deg_results,
+        lab = rownames(deg_results),
+        x = 'logFC',
+        y = 'P.Value',
+        pCutoff = 0.05,
+        FCcutoff = 1,
+        title = paste("DE:", coef_name, "in", cell_type),
+        subtitle = "limma model",
+        legendLabels = c("NS", "Log2 FC", "p-value", "p & FC")
+      )
+    )
+
+    dev.off()
+    message("Saved volcano plot: ", png_filename)
+
+  } else {
+    warning("Coefficient ", coef_name, " not found in model.")
+  }
+}
+
+```
+
+
+#GSEA
+```{r}
+rm(list = ls())
+library(dplyr)
+library(fgsea)
+library(clusterProfiler)
+library(tibble)
+#load("analysis/DGE_Astrocytes_haplotypeH1H1_A.Rda")
+#load("analysis/DGE_Astrocytes_haplotypeH1H2.Rda")
+#load("analysis/DGE_Neuron_haplotypeH1H1_A.Rda")
+load("analysis/DGE_Neuron_haplotypeH1H2.Rda")
+
+# Load Reactome pathways GMT file (adjust path if needed) 
+
+Reactome <- read.gmt("c2.cp.kegg_legacy.v2023.2.Hs.symbols.gmt")
+
+Reactome$term <- gsub("^KEGG_", "", Reactome$term)
+
+dge_export <- dge_export$full_DGE
+dge_export$hgnc_symbol <- rownames(dge_export)
+
+# Prepare gene list from differential expression results (contrast_result)
+gene_list <- dge_export %>%
+  filter(!is.na(t), !is.na(hgnc_symbol)) %>%
+  distinct(hgnc_symbol, .keep_all = TRUE) %>%
+  arrange(desc(t)) %>%
+  select(hgnc_symbol, t) %>%
+  deframe()
+
+gene_list <- gene_list[names(gene_list) != ""]
+
+# Run GSEA
+gsea_results <- GSEA(
+  geneList = gene_list,
+  TERM2GENE = Reactome,
+  minGSSize = 10,
+  maxGSSize = 500,
+  pvalueCutoff = 0.05,
+  verbose = TRUE
+)
+
+gsea_df <- as.data.frame(gsea_results)
+
+#save(gsea_df, gsea_results, file = "gsea_H1_H2_AFR_Astro.rda")
+#save(gsea_df, gsea_results, file = "gsea_H1_H1_A_AFR_Astro.rda")
+#save(gsea_df, gsea_results, file = "gsea_H1_H1_A_AFR_Neuron.rda")
+save(gsea_df, gsea_results, file = "gsea_H1_H2_AFR_Neuron.rda")
+
+```
+
+##barplot 
+```{r}
+library(ggplot2)
+library(dplyr)
+library(patchwork)
+
+# Extract GSEA result table
+gsea_df <- gsea_results@result
+
+# ---- Add significance stars ----
+add_stars <- function(df) {
+  df %>%
+    mutate(star = case_when(
+      qvalue < 0.001 ~ "***",
+      qvalue < 0.01  ~ "**",
+      qvalue < 0.05  ~ "*",
+      TRUE           ~ ""
+    ))
+}
+
+# Top 10 upregulated pathways (NES > 0)
+gsea_up <- gsea_df %>%
+  filter(NES > 0) %>%
+  arrange(desc(NES)) %>%
+  head(10) %>%
+  add_stars()
+
+# Top 10 downregulated pathways (NES < 0)
+gsea_down <- gsea_df %>%
+  filter(NES < 0) %>%
+  arrange(NES) %>%
+  head(10) %>%
+  add_stars()
+library(stringr)
+
+gsea_up <- gsea_up %>%
+  mutate(
+    Description_clean = str_replace_all(Description, "_", " "),
+    Description = str_wrap(Description_clean, width = 40)
+  )
+
+gsea_down <- gsea_down %>%
+  mutate(
+    Description_clean = str_replace_all(Description, "_", " "),
+    Description = str_wrap(Description_clean, width = 40)
+  )
+
+
+# ---- Plot top upregulated pathways WITH STARS ----
+p_up <- ggplot(gsea_up, aes(x = reorder(Description, NES), y = NES, fill = NES)) +
+  geom_col() +
+  coord_flip() +
+  scale_fill_gradient(low = "pink", high = "red") +
+  geom_text(aes(label = star),
+            hjust = -0.2, size = 3, color = "black") +     # <-- added stars
+  labs(title = "Top 10 Upregulated Pathways",
+       x = NULL, y = "Normalized Enrichment Score (NES)") +
+  theme_minimal() +
+ theme(axis.text.y = element_text(size = 8, lineheight = 1)) +
+ylim(min(0, min(gsea_up$NES)), max(gsea_up$NES) * 1.1) # space for stars
+
+# ---- Plot top downregulated pathways WITH STARS ----
+p_down <- ggplot(gsea_down, aes(x = reorder(Description, NES), y = NES, fill = NES)) +
+  geom_col() +
+  coord_flip() +
+  scale_fill_gradient(low = "lightblue", high = "blue") +
+  geom_text(aes(label = star),
+            hjust = 1.2, size = 3, color = "black") +  # <-- added stars
+  labs(title = "Top 10 Downregulated Pathways",
+       x = NULL, y = "Normalized Enrichment Score (NES)") +
+  theme_minimal() +
+  theme(axis.text.y = element_text(size = 8, lineheight = 1)) +
+  ylim(min(gsea_down$NES) * 1.1, max(0, max(gsea_down$NES)))  # space for stars
+
+# ---- Combined plot ----
+combined_plot <- p_up + p_down + plot_layout(ncol = 2)
+
+ggsave(
+  filename = "combined_plot_H1_H2_Astro.png",
+  plot = combined_plot,
+  width = 16,
+  height = 6,
+  dpi = 300
+)
+
+```
+
+##cntplot
+```{r}
+library(DOSE)
+library(clusterProfiler)
+library(enrichplot)
+library(dplyr)
+
+# Extract results from GSEA object
+gsea_df <- gsea_results@result
+
+# Filter positive and negative NES pathways
+gsea_df_pos <- filter(gsea_df, NES > 0)
+gsea_df_neg <- filter(gsea_df, NES < 0)
+
+# Clone GSEA objects
+gsea_pos <- gsea_results
+gsea_neg <- gsea_results
+
+gsea_pos@result <- gsea_df_pos
+gsea_neg@result <- gsea_df_neg
+
+up_genes <- dge_export %>%
+  filter(logFC > 0, P.Value < 0.05, !is.na(hgnc_symbol))
+
+down_genes <- dge_export %>%
+  filter(logFC < 0, P.Value < 0.05, !is.na(hgnc_symbol))
+
+# Positive gene list from upregulated genes
+geneList_p <- up_genes$logFC
+names(geneList_p) <- up_genes$hgnc_symbol
+geneList_p <- sort(geneList_p, decreasing = TRUE)
+
+# Filter positive GSEA object core_enrichment genes by geneList_p
+gsea_filtered_up <- gsea_pos
+gsea_filtered_up@result$core_enrichment <- sapply(
+  gsea_filtered_up@result$core_enrichment,
+  function(genes_str) {
+    genes <- unlist(strsplit(genes_str, "/"))
+    genes_filt <- intersect(genes, names(geneList_p))
+    paste(genes_filt, collapse = "/")
+  }
+)
+
+# Remove pathways with empty core_enrichment
+gsea_filtered_up@result <- gsea_filtered_up@result[gsea_filtered_up@result$core_enrichment != "", ]
+gsea_filtered_up@geneSets <- lapply(gsea_filtered_up@result$core_enrichment, function(x) unlist(strsplit(x, "/")))
+names(gsea_filtered_up@geneSets) <- gsea_filtered_up@result$ID
+
+# Plot positive cnetplot
+cnetplot_up <- cnetplot(
+  gsea_filtered_up,
+  showCategory = 2,
+  foldChange = geneList_p,
+  circular = FALSE,
+  colorEdge = TRUE,
+  label_size = 3
+) + 
+  scale_color_gradient(low = "white", high = "red", name = "logFC")
+
+ggsave("cnetplot_up.pdf", plot = cnetplot_up, width = 12, height = 6)
+
+# Negative gene list from downregulated genes
+geneList_w <- down_genes$logFC
+names(geneList_w) <- down_genes$hgnc_symbol
+geneList_w <- sort(geneList_w, decreasing = TRUE)
+
+# Filter negative GSEA object core_enrichment genes by geneList_w
+gsea_filtered_dw <- gsea_neg
+gsea_filtered_dw@result$core_enrichment <- sapply(
+  gsea_filtered_dw@result$core_enrichment,
+  function(genes_str) {
+    genes <- unlist(strsplit(genes_str, "/"))
+    genes_filt <- intersect(genes, names(geneList_w))
+    paste(genes_filt, collapse = "/")
+  }
+)
+
+# Remove empty pathways
+gsea_filtered_dw@result <- gsea_filtered_dw@result[gsea_filtered_dw@result$core_enrichment != "", ]
+gsea_filtered_dw@geneSets <- lapply(gsea_filtered_dw@result$core_enrichment, function(x) unlist(strsplit(x, "/")))
+names(gsea_filtered_dw@geneSets) <- gsea_filtered_dw@result$ID
+
+# Plot negative cnetplot
+cnetplot_dw <- cnetplot(
+  gsea_filtered_dw,
+  showCategory = 2,
+  foldChange = geneList_w,
+  circular = FALSE,
+  label_size = 3
+) + 
+  scale_color_gradient(low = "blue", high = "white", name = "logFC")
+
+ggsave("cnetplot_dw.pdf", plot = cnetplot_dw, width = 12, height = 6)
+```
+
+
+
+#venn
+##venn neurons
+```{r}
+rm(list = ls())
+
+library(ggplot2)
+library(ggvenn)
+library(gridExtra)
+
+# Load GSEA results
+load("analysis/gsea_H1_H2_AFR_Neuron.rda")
+gsea_H2 <- gsea_results@result
+
+load("analysis/gsea_H1_A_AFR_Neuron.rda")
+gsea_H1A <- gsea_results@result
+
+# -------------------
+# UP
+# -------------------
+sig_H2_up <- unique(gsea_H2$Description[gsea_H2$qvalue < 0.05 & gsea_H2$NES > 0])
+sig_H1A_up <- unique(gsea_H1A$Description[gsea_H1A$qvalue < 0.05 & gsea_H1A$NES > 0])
+
+venn_up <- list(
+  H1H1_A = sig_H1A_up,
+  H1H2   = sig_H2_up
+)
+
+p_up <- ggvenn(
+  venn_up,
+  fill_color = c("red", "#4CAF50"),
+  stroke_size = 0.5,
+  text_size = 7
+) +
+  ggtitle("UP-regulated pathways") +
+  theme(text = element_text(size = 14))
+
+# -------------------
+# DOWN  ← YOU WERE MISSING THIS BLOCK
+# -------------------
+sig_H2_down <- unique(gsea_H2$Description[gsea_H2$qvalue < 0.05 & gsea_H2$NES < 0])
+sig_H1A_down <- unique(gsea_H1A$Description[gsea_H1A$qvalue < 0.05 & gsea_H1A$NES < 0])
+
+venn_down <- list(
+  H1H1_A = sig_H1A_down,
+  H1H2   = sig_H2_down
+)
+
+p_down <- ggvenn(
+  venn_down,
+  fill_color = c("red", "#4CAF50"),
+  stroke_size = 0.5,
+  text_size = 7
+) +
+  ggtitle("DOWN-regulated pathways") +
+  theme(text = element_text(size = 14))
+
+# -------------------
+# STACK
+# -------------------
+final_plot <- gridExtra::grid.arrange(p_up, p_down, ncol = 1)
+
+ggsave(
+  "Venn_UP_DOWN_Neurons.pdf",
+  final_plot,
+  width = 7,
+  height = 10
+)
+```
+###table
+```{r}
+rm(list = ls())
+
+library(dplyr)
+library(tidyr)
+
+# ----------------------------
+# Function: build full GSEA table
+# ----------------------------
+make_gsea_table <- function(gsea_df) {
+
+  base <- gsea_df %>%
+    dplyr::select(
+      Pathway = Description,
+      NES,
+      FDR = qvalue,
+      core_enrichment
+    )
+
+  # split genes in core enrichment (always "/" in GSEA output)
+  gene_list <- strsplit(base$core_enrichment, "/")
+
+  # collapse into clean string
+  base$Genes <- sapply(gene_list, function(g) {
+    paste(g, collapse = "; ")
+  })
+
+  # final table (ALL pathways, no filtering)
+  base %>%
+    dplyr::select(Pathway, NES, FDR, Genes)
+}
+
+# ----------------------------
+# Load data
+# ----------------------------
+load("analysis/gsea_H1_H2_AFR_Neuron.rda")
+gsea_H2 <- gsea_results@result
+
+load("analysis/gsea_H1_A_AFR_Neuron.rda")
+gsea_H1A <- gsea_results@result
+
+# ----------------------------
+# Build tables (ALL pathways)
+# ----------------------------
+table_H2  <- make_gsea_table(gsea_H2)
+table_H1A <- make_gsea_table(gsea_H1A)
+
+# ----------------------------
+# Export
+# ----------------------------
+write.csv(table_H2,  "GSEA_H1H2_Neuron_ALL.csv", row.names = FALSE)
+write.csv(table_H1A, "GSEA_H1A_Neuron_ALL.csv", row.names = FALSE)
+```
+###table venn
+```{r}
+# ============================
+# NEURONS - VENN TABLE
+# ============================
+
+rm(list = ls())
+
+library(dplyr)
+
+# ----------------------------
+# Load GSEA results
+# ----------------------------
+load("analysis/gsea_H1_H2_AFR_Neuron.rda")
+gsea_H2 <- gsea_results@result
+
+load("analysis/gsea_H1_A_AFR_Neuron.rda")
+gsea_H1A <- gsea_results@result
+
+# ----------------------------
+# Significant pathways
+# ----------------------------
+
+# UP
+H1A_up <- unique(gsea_H1A$Description[
+  gsea_H1A$qvalue < 0.05 & gsea_H1A$NES > 0
+])
+
+H2_up <- unique(gsea_H2$Description[
+  gsea_H2$qvalue < 0.05 & gsea_H2$NES > 0
+])
+
+# DOWN
+H1A_down <- unique(gsea_H1A$Description[
+  gsea_H1A$qvalue < 0.05 & gsea_H1A$NES < 0
+])
+
+H2_down <- unique(gsea_H2$Description[
+  gsea_H2$qvalue < 0.05 & gsea_H2$NES < 0
+])
+
+# ----------------------------
+# Build overlap tables
+# ----------------------------
+
+make_venn_table <- function(set1, set2, name1, name2, direction){
+
+  shared <- intersect(set1, set2)
+  only1  <- setdiff(set1, set2)
+  only2  <- setdiff(set2, set1)
+
+  data.frame(
+    Regulation = direction,
+    Category = c(
+      rep(paste0("Shared_", name1, "_", name2), length(shared)),
+      rep(paste0("Only_", name1), length(only1)),
+      rep(paste0("Only_", name2), length(only2))
+    ),
+    Pathway = c(shared, only1, only2)
+  )
+}
+
+table_up <- make_venn_table(
+  H1A_up,
+  H2_up,
+  "H1A",
+  "H1H2",
+  "UP"
+)
+
+table_down <- make_venn_table(
+  H1A_down,
+  H2_down,
+  "H1A",
+  "H1H2",
+  "DOWN"
+)
+
+final_table <- bind_rows(table_up, table_down)
+
+# ----------------------------
+# Export
+# ----------------------------
+write.csv(
+  final_table,
+  "Neuron_Venn_Pathways.csv",
+  row.names = FALSE
+)
+
+print(final_table)
+```
+##venn astro
+```{r}
+rm(list = ls())
+
+library(ggplot2)
+library(ggvenn)
+library(gridExtra)
+
+# Load GSEA results
+load("analysis/gsea_H1_H2_AFR_Astro.rda")
+gsea_H2 <- gsea_results@result
+
+load("analysis/gsea_H1_A_AFR_Astro.rda")
+gsea_H1A <- gsea_results@result
+
+# -------------------
+# UP
+# -------------------
+sig_H2_up <- unique(gsea_H2$Description[gsea_H2$qvalue < 0.05 & gsea_H2$NES > 0])
+sig_H1A_up <- unique(gsea_H1A$Description[gsea_H1A$qvalue < 0.05 & gsea_H1A$NES > 0])
+
+venn_up <- list(
+  H1H1_A = sig_H1A_up,
+  H1H2   = sig_H2_up
+)
+
+p_up <- ggvenn(
+  venn_up,
+  fill_color = c("red", "#4CAF50"),
+  stroke_size = 0.5,
+  text_size = 7
+) +
+  ggtitle("UP-regulated pathways") +
+  theme(text = element_text(size = 14))
+
+# -------------------
+# DOWN  ← YOU WERE MISSING THIS BLOCK
+# -------------------
+sig_H2_down <- unique(gsea_H2$Description[gsea_H2$qvalue < 0.05 & gsea_H2$NES < 0])
+sig_H1A_down <- unique(gsea_H1A$Description[gsea_H1A$qvalue < 0.05 & gsea_H1A$NES < 0])
+
+venn_down <- list(
+  H1H1_A = sig_H1A_down,
+  H1H2   = sig_H2_down
+)
+
+p_down <- ggvenn(
+  venn_down,
+  fill_color = c("red", "#4CAF50"),
+  stroke_size = 0.5,
+  text_size = 7
+) +
+  ggtitle("DOWN-regulated pathways") +
+  theme(text = element_text(size = 14))
+
+# -------------------
+# STACK
+# -------------------
+final_plot <- gridExtra::grid.arrange(p_up, p_down, ncol = 1)
+
+ggsave(
+  "Venn_UP_DOWN_Astro.pdf",
+  final_plot,
+  width = 7,
+  height = 10
+)
+```
+###table 
+```{r}
+rm(list = ls())
+
+library(dplyr)
+library(tidyr)
+
+# ----------------------------
+# Function: build full GSEA table
+# ----------------------------
+make_gsea_table <- function(gsea_df) {
+
+  base <- gsea_df %>%
+    dplyr::select(
+      Pathway = Description,
+      NES,
+      FDR = qvalue,
+      core_enrichment
+    )
+
+  # split genes in core enrichment (always "/" in GSEA output)
+  gene_list <- strsplit(base$core_enrichment, "/")
+
+  # collapse into clean string
+  base$Genes <- sapply(gene_list, function(g) {
+    paste(g, collapse = "; ")
+  })
+
+  # final table (ALL pathways, no filtering)
+  base %>%
+    dplyr::select(Pathway, NES, FDR, Genes)
+}
+
+# ----------------------------
+# Load data
+# ----------------------------
+load("analysis/gsea_H1_H2_AFR_Astro.rda")
+gsea_H2 <- gsea_results@result
+
+load("analysis/gsea_H1_A_AFR_Astro.rda")
+gsea_H1A <- gsea_results@result
+
+# ----------------------------
+# Build tables (ALL pathways)
+# ----------------------------
+table_H2  <- make_gsea_table(gsea_H2)
+table_H1A <- make_gsea_table(gsea_H1A)
+
+# ----------------------------
+# Export
+# ----------------------------
+write.csv(table_H2,  "GSEA_H1H2_Astro_ALL.csv", row.names = FALSE)
+write.csv(table_H1A, "GSEA_H1A_Astro_ALL.csv", row.names = FALSE)
+```
+####table venn
+```{r}
+# ============================
+# ASTROCYTES - VENN TABLE
+# ============================
+
+rm(list = ls())
+
+library(dplyr)
+
+# ----------------------------
+# Load GSEA results
+# ----------------------------
+load("analysis/gsea_H1_H2_AFR_Astro.rda")
+gsea_H2 <- gsea_results@result
+
+load("analysis/gsea_H1_A_AFR_Astro.rda")
+gsea_H1A <- gsea_results@result
+
+# ----------------------------
+# Significant pathways
+# ----------------------------
+
+# UP
+H1A_up <- unique(gsea_H1A$Description[
+  gsea_H1A$qvalue < 0.05 & gsea_H1A$NES > 0
+])
+
+H2_up <- unique(gsea_H2$Description[
+  gsea_H2$qvalue < 0.05 & gsea_H2$NES > 0
+])
+
+# DOWN
+H1A_down <- unique(gsea_H1A$Description[
+  gsea_H1A$qvalue < 0.05 & gsea_H1A$NES < 0
+])
+
+H2_down <- unique(gsea_H2$Description[
+  gsea_H2$qvalue < 0.05 & gsea_H2$NES < 0
+])
+
+# ----------------------------
+# Build overlap tables
+# ----------------------------
+
+make_venn_table <- function(set1, set2, name1, name2, direction){
+
+  shared <- intersect(set1, set2)
+  only1  <- setdiff(set1, set2)
+  only2  <- setdiff(set2, set1)
+
+  data.frame(
+    Regulation = direction,
+    Category = c(
+      rep(paste0("Shared_", name1, "_", name2), length(shared)),
+      rep(paste0("Only_", name1), length(only1)),
+      rep(paste0("Only_", name2), length(only2))
+    ),
+    Pathway = c(shared, only1, only2)
+  )
+}
+
+table_up <- make_venn_table(
+  H1A_up,
+  H2_up,
+  "H1A",
+  "H1H2",
+  "UP"
+)
+
+table_down <- make_venn_table(
+  H1A_down,
+  H2_down,
+  "H1A",
+  "H1H2",
+  "DOWN"
+)
+
+final_table <- bind_rows(table_up, table_down)
+
+# ----------------------------
+# Export
+# ----------------------------
+write.csv(
+  final_table,
+  "Astro_Venn_Pathways.csv",
+  row.names = FALSE
+)
+
+print(final_table)
+```
+
+
+#overlap with RNA analysis
+```{r}
+library(readxl)
+library(readr)
+library(dplyr)
+library(stringr)
+library(ggplot2)
+library(ggVennDiagram)
+
+# ============================================================
+# FILES
+# ============================================================
+
+rna_file  <- "RNA.xlsx"
+prot_file <- "Astro_Venn_Pathways.csv"
+
+# ============================================================
+# CLEAN PATHWAY NAMES
+# ============================================================
+
+clean_pathway <- function(x) {
+  x %>%
+    str_remove("^KEGG_") %>%
+    str_trim()
+}
+
+# ============================================================
+# READ RNA-seq EXCEL
+# ============================================================
+
+# LEFT TABLE = H1_A vs H1
+rna_h1a <- read_excel(
+  rna_file,
+  range = "A3:D1000",
+  col_names = c("Pathway", "NES", "FDR", "Genes")
+)
+
+# RIGHT TABLE = H1H2 vs H1
+rna_h1h2 <- read_excel(
+  rna_file,
+  range = "F3:H1000",
+  col_names = c("Pathway", "NES", "FDR")
+)
+
+# Remove KEGG_
+rna_h1a$Pathway  <- clean_pathway(rna_h1a$Pathway)
+rna_h1h2$Pathway <- clean_pathway(rna_h1h2$Pathway)
+
+# Remove NA rows
+rna_h1a  <- rna_h1a %>% filter(!is.na(Pathway))
+rna_h1h2 <- rna_h1h2 %>% filter(!is.na(Pathway))
+
+# ============================================================
+# SPLIT RNA-seq INTO UP / DOWN
+# ============================================================
+
+rna_h1a_up   <- rna_h1a %>% filter(NES > 0)
+rna_h1a_down <- rna_h1a %>% filter(NES < 0)
+
+rna_h1h2_up   <- rna_h1h2 %>% filter(NES > 0)
+rna_h1h2_down <- rna_h1h2 %>% filter(NES < 0)
+
+# ============================================================
+# READ PROTEOMICS CSV
+# ============================================================
+
+prot <- read_csv(prot_file)
+
+prot$Pathway <- prot$Pathway %>%
+  str_trim()
+
+# ============================================================
+# SPLIT PROTEOMICS INTO COMPARISON + REGULATION
+# ============================================================
+
+# ---------- H1A UP ----------
+prot_h1a_up <- prot %>%
+  filter(
+    Regulation == "UP",
+    Category %in% c("Only_H1A", "Shared_H1A_H1H2")
+  )
+
+# ---------- H1A DOWN ----------
+prot_h1a_down <- prot %>%
+  filter(
+    Regulation == "DOWN",
+    Category %in% c("Only_H1A", "Shared_H1A_H1H2")
+  )
+
+# ---------- H1H2 UP ----------
+prot_h1h2_up <- prot %>%
+  filter(
+    Regulation == "UP",
+    Category %in% c("Only_H1H2", "Shared_H1A_H1H2")
+  )
+
+# ---------- H1H2 DOWN ----------
+prot_h1h2_down <- prot %>%
+  filter(
+    Regulation == "DOWN",
+    Category %in% c("Only_H1H2", "Shared_H1A_H1H2")
+  )
+
+# ============================================================
+# UNIQUE PATHWAY SETS
+# ============================================================
+
+# RNA-seq
+rna_h1a_up_set    <- unique(rna_h1a_up$Pathway)
+rna_h1a_down_set  <- unique(rna_h1a_down$Pathway)
+
+rna_h1h2_up_set   <- unique(rna_h1h2_up$Pathway)
+rna_h1h2_down_set <- unique(rna_h1h2_down$Pathway)
+
+# Proteomics
+prot_h1a_up_set    <- unique(prot_h1a_up$Pathway)
+prot_h1a_down_set  <- unique(prot_h1a_down$Pathway)
+
+prot_h1h2_up_set   <- unique(prot_h1h2_up$Pathway)
+prot_h1h2_down_set <- unique(prot_h1h2_down$Pathway)
+
+# ============================================================
+# FUNCTION TO CREATE VENN
+# ============================================================
+
+make_venn <- function(rna_set, prot_set, title_text, output_name) {
+
+  venn_list <- list(
+    RNAseq = rna_set,
+    Proteomics = prot_set
+  )
+
+  p <- ggVennDiagram(
+    venn_list,
+    label_alpha = 0,
+    category.names = c("RNA-seq", "Proteomics")
+  ) +
+    labs(title = title_text) +
+    theme(
+      plot.title = element_text(
+        hjust = 0.5,
+        face = "bold",
+        size = 16
+      )
+    )
+
+  print(p)
+
+  ggsave(
+    output_name,
+    plot = p,
+    width = 6,
+    height = 6,
+    dpi = 300
+  )
+}
+
+# ============================================================
+# CREATE ALL 4 VENNS
+# ============================================================
+
+# 1. H1_A vs H1 UP
+make_venn(
+  rna_h1a_up_set,
+  prot_h1a_up_set,
+  "H1_A vs H1 - UP",
+  "Venn_H1A_UP.png"
+)
+
+# 2. H1_A vs H1 DOWN
+make_venn(
+  rna_h1a_down_set,
+  prot_h1a_down_set,
+  "H1_A vs H1 - DOWN",
+  "Venn_H1A_DOWN.png"
+)
+
+# 3. H1H2 vs H1 UP
+make_venn(
+  rna_h1h2_up_set,
+  prot_h1h2_up_set,
+  "H1H2 vs H1 - UP",
+  "Venn_H1H2_UP.png"
+)
+
+# 4. H1H2 vs H1 DOWN
+make_venn(
+  rna_h1h2_down_set,
+  prot_h1h2_down_set,
+  "H1H2 vs H1 - DOWN",
+  "Venn_H1H2_DOWN.png"
+)
+
+# ============================================================
+# PRINT SHARED PATHWAYS
+# ============================================================
+
+cat("\n============================\n")
+cat("H1_A vs H1 - UP overlap\n")
+cat("============================\n")
+print(intersect(rna_h1a_up_set, prot_h1a_up_set))
+
+cat("\n============================\n")
+cat("H1_A vs H1 - DOWN overlap\n")
+cat("============================\n")
+print(intersect(rna_h1a_down_set, prot_h1a_down_set))
+
+cat("\n============================\n")
+cat("H1H2 vs H1 - UP overlap\n")
+cat("============================\n")
+print(intersect(rna_h1h2_up_set, prot_h1h2_up_set))
+
+cat("\n============================\n")
+cat("H1H2 vs H1 - DOWN overlap\n")
+cat("============================\n")
+print(intersect(rna_h1h2_down_set, prot_h1h2_down_set))
+```
+##tables
+```{r}
+# ============================================================
+# CREATE TABLES OF SHARED PATHWAYS
+# ============================================================
+
+# -----------------------------
+# H1_A vs H1 - UP
+# -----------------------------
+shared_h1a_up <- data.frame(
+  Shared_Pathways = intersect(rna_h1a_up_set, prot_h1a_up_set)
+)
+
+print(shared_h1a_up)
+
+write.csv(
+  shared_h1a_up,
+  "Shared_H1A_UP.csv",
+  row.names = FALSE
+)
+
+# -----------------------------
+# H1_A vs H1 - DOWN
+# -----------------------------
+shared_h1a_down <- data.frame(
+  Shared_Pathways = intersect(rna_h1a_down_set, prot_h1a_down_set)
+)
+
+print(shared_h1a_down)
+
+write.csv(
+  shared_h1a_down,
+  "Shared_H1A_DOWN.csv",
+  row.names = FALSE
+)
+
+# -----------------------------
+# H1H2 vs H1 - UP
+# -----------------------------
+shared_h1h2_up <- data.frame(
+  Shared_Pathways = intersect(rna_h1h2_up_set, prot_h1h2_up_set)
+)
+
+print(shared_h1h2_up)
+
+write.csv(
+  shared_h1h2_up,
+  "Shared_H1H2_UP.csv",
+  row.names = FALSE
+)
+
+# -----------------------------
+# H1H2 vs H1 - DOWN
+# -----------------------------
+shared_h1h2_down <- data.frame(
+  Shared_Pathways = intersect(rna_h1h2_down_set, prot_h1h2_down_set)
+)
+
+print(shared_h1h2_down)
+
+write.csv(
+  shared_h1h2_down,
+  "Shared_H1H2_DOWN.csv",
+  row.names = FALSE
+)
+
+# ============================================================
+# COMBINED SUMMARY TABLE
+# ============================================================
+
+summary_table <- data.frame(
+  Comparison = c(
+    "H1_A vs H1 UP",
+    "H1_A vs H1 DOWN",
+    "H1H2 vs H1 UP",
+    "H1H2 vs H1 DOWN"
+  ),
+  Shared_Count = c(
+    length(intersect(rna_h1a_up_set, prot_h1a_up_set)),
+    length(intersect(rna_h1a_down_set, prot_h1a_down_set)),
+    length(intersect(rna_h1h2_up_set, prot_h1h2_up_set)),
+    length(intersect(rna_h1h2_down_set, prot_h1h2_down_set))
+  )
+)
+
+print(summary_table)
+
+write.csv(
+  summary_table,
+  "Shared_Pathway_Summary.csv",
+  row.names = FALSE
+)
+```
