@@ -1,0 +1,130 @@
+---
+title: "plot PMT for genes"
+author: "Chiara"
+date: "2025-04-02"
+output: html_document
+---
+
+#analysis of expression
+- import PMT from raw files from pipeline 3_01_RawData_chr1toY-Neurons.rda, 3_01_RawData_chr1toY-Astro.rda,Table_covariates.csv
+
+#IMPORT DATA
+```{r}
+library(stringr)
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(stringr)
+library(data.table)
+library(forcats)
+
+Neurons <- "3_01_RawData_chr1toY-Neurons.rda"
+load(Neurons)
+Neurons <- rsem_gene
+rm(rsem_gene)
+
+Astros <- "3_01_RawData_chr1toY-Astro.rda"
+load(Astros)
+Astros <- rsem_gene
+rm(rsem_gene)
+
+Astros$ensembl_gene_id <- rownames(Astros)
+Astros <- Astros %>%
+  select(ensembl_gene_id, everything())
+
+Neurons$ensembl_gene_id <- rownames(Neurons)
+Neurons <- Neurons %>%
+  select(ensembl_gene_id, everything())
+
+Astros$ensembl_gene_id <- str_extract(Astros$ensembl_gene_id, "^ENSG[0-9]+")
+Neurons$ensembl_gene_id <- str_extract(Neurons$ensembl_gene_id, "^ENSG[0-9]+")
+geneAnno1$ensembl_gene_id <- str_extract(geneAnno1$ensembl_gene_id, "^ENSG[0-9]+")
+
+
+joined_data_N <- merge(geneAnno1, Neurons, by = "ensembl_gene_id")
+joined_data_A <- merge(geneAnno1, Astros, by = "ensembl_gene_id")
+rm(joined_data)
+
+write.csv(as.data.frame(joined_data_A), 
+          file="rsem_gene_astro.csv")
+
+write.csv(as.data.frame(joined_data_N), 
+          file="rsem_gene_neurons.csv")
+
+```
+#FIRST DATA ANALYSIS
+```{r}
+
+sampleTable <- read.csv("Table_covariates.csv", header=T)
+
+colnames(joined_data_N)
+
+joined_data_A_clean <- joined_data_A %>%
+  select(-c(,3:9))
+
+joined_data_N_clean <- joined_data_N %>%
+  select(-c(,3:9))
+
+joined_data_A_clean <- joined_data_A_clean[!duplicated(joined_data_A_clean$hgnc_symbol), ]
+joined_data_N_clean <- joined_data_N_clean[!duplicated(joined_data_N_clean$hgnc_symbol), ]
+
+# Check for duplicates in the first dataset (joined_data_A_clean)
+duplicated_A <- joined_data_A_clean[duplicated(joined_data_A_clean$hgnc_symbol), ]
+head(duplicated_A)
+
+# Check for duplicates in the second dataset (joined_data_N_clean)
+duplicated_N <- joined_data_N_clean[duplicated(joined_data_N_clean$hgnc_symbol), ]
+head(duplicated_N)
+
+# Convert data frames to data.tables
+setDT(joined_data_A_clean)
+setDT(joined_data_N_clean)
+
+# Perform the merge using data.table
+joined_data_clean <- merge(joined_data_A_clean, joined_data_N_clean, by = "hgnc_symbol", allow.cartesian = TRUE)
+
+```
+##MAP2
+```{r}
+map2 <- joined_data_clean %>%
+  dplyr::filter(hgnc_symbol == "MAP2") %>%
+  pivot_longer(cols = -c(hgnc_symbol, ensembl_gene_id.x,ensembl_gene_id.y), names_to = "Line_Name", values_to = "map2")
+  
+map2  <- merge(map2 , sampleTable, by.x = "Line_Name", by.y = "Line_Name")
+
+map2$haplotypeXancestry <- factor(map2 $haplotypeXancestry, levels = c("H1H1_AFR", "H1H1_A_AFR", "H1H2_AFR", "H1H1_EUR", "H1H2_EUR"))
+
+map2  %>% group_by(haplotypeXancestry)
+
+ggplot(map2 , aes(`haplotypeXancestry`, `map2`)) + 
+  geom_point(position = position_jitter(0.1), aes(col = haplotypeXancestry), size = 1) + 
+  geom_boxplot(alpha = 0, width = 0.5, size = 0.5, aes(col = haplotypeXancestry)) + 
+  theme_classic() + theme(legend.position = "none", axis.text.x = element_text(color = "black", angle = 0, face = "bold", size = 6), 
+                          axis.text.y = element_text(color = "black"), axis.title.y = element_text(face = "bold", size =18)) + facet_wrap(~Cell_Type) +
+  ylab("MAP2  expression") + xlab("") 
+
+ggsave("MAP2.png", plot = last_plot(), width = 8, height = 6, dpi = 300)
+
+```
+##s100a10
+```{r}
+target <- joined_data_clean %>%
+  dplyr::filter(hgnc_symbol == "S100A10") %>%
+  pivot_longer(cols = -c(hgnc_symbol, ensembl_gene_id.x,ensembl_gene_id.y), names_to = "Line_Name", values_to = "target")
+  
+target  <- merge(target , sampleTable, by.x = "Line_Name", by.y = "Line_Name")
+
+s100a10$haplotypeXancestry <- factor(s100a10$haplotypeXancestry, levels = c("H1H1_AFR", "H1H1_A_AFR", "H1H2_AFR", "H1H1_EUR", "H1H2_EUR"))
+
+target  %>% group_by(haplotypeXancestry)
+
+ggplot(target, aes(`haplotypeXancestry`, `target`)) + 
+  geom_point(position = position_jitter(0.1), aes(col = haplotypeXancestry), size = 1) + 
+  geom_boxplot(alpha = 0, width = 0.5, size = 0.5, aes(col = haplotypeXancestry)) + 
+  theme_classic() + theme(legend.position = "none", axis.text.x = element_text(color = "black", angle = 0, face = "bold", size = 6), 
+                          axis.text.y = element_text(color = "black"), axis.title.y = element_text(face = "bold", size =18)) + facet_wrap(~Cell_Type) +
+  ylab("s100a10  expression") + xlab("") 
+
+ggsave("s100a10.png", plot = last_plot(), width = 8, height = 6, dpi = 300)
+
+```
